@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "crush",
+  "label": "Crush",
+  "installed": "crush",
+  "update": { "program": "npm", "args": ["install", "-g", "@charmland/crush@latest"] },
+  "version": { "program": "crush", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "npm-global",
+  "failure_contains": [],
+  "checks": []
+}

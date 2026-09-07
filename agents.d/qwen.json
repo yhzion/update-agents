@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "qwen",
+  "label": "Qwen Code",
+  "installed": "qwen",
+  "update": { "program": "qwen", "args": ["update"] },
+  "version": { "program": "qwen", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "npm-global",
+  "failure_contains": [],
+  "checks": []
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "cline",
+  "label": "Cline",
+  "installed": "cline",
+  "update": { "program": "npm", "args": ["install", "-g", "cline@latest"] },
+  "version": { "program": "cline", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "npm-global",
+  "failure_contains": [],
+  "checks": []
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "dcode",
+  "label": "Deep Agents Code",
+  "installed": "dcode",
+  "update": { "program": "dcode", "args": ["update"] },
+  "version": { "program": "dcode", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "uv-tools",
+  "failure_contains": [],
+  "checks": []
+}

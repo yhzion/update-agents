@@ -4,10 +4,10 @@
 //! - Consumes [`RunHandle`] read-only: snapshots `handle.state` under short
 //!   locks and mutates only `handle.cancel`. The engine thread keeps running;
 //!   `main` joins it via `RunHandle::wait` after this function returns.
-//! - Starts drawing while the run is active and keeps the final dashboard on
-//!   screen until q/Enter once `state.done` is set.
+//! - Starts drawing while the run is active, then shows a completion countdown.
+//!   Any key exits after completion; without input it exits after five seconds.
 //! - Refreshes at most 8 Hz while running and redraws only on real changes;
-//!   when finished it idles at a low rate and redraws on events. Detail logs
+//!   the completion countdown redraws once per second. Detail logs
 //!   come from `engine::tail` with bounded, rate-limited disk reads. The only
 //!   progress indicator is the factual completed-tool count: no fabricated
 //!   percentages anywhere.
@@ -19,7 +19,7 @@
 //! Key bindings: j/k or arrows select, Enter/l toggles the bounded detail
 //! log, PgUp/PgDn scrolls it (pages the list otherwise), ? toggles help,
 //! q/Esc asks for confirmation while running, Ctrl-C cancels immediately,
-//! and after completion q/Enter exits.
+//! and after completion any key exits (automatically after five seconds).
 
 use std::fmt::Write as _;
 use std::io::{self, Stdout, Write as _};
@@ -46,8 +46,9 @@ use crate::model::{Job, RunState, Status};
 
 /// Cadence while the run is active: at most 8 snapshot/draw rounds per second.
 const TICK: Duration = Duration::from_millis(125);
-/// Idle cadence once the run is finished; redraws happen on real changes only.
+/// Countdown cadence once the run is finished.
 const IDLE_POLL: Duration = Duration::from_secs(1);
+const COMPLETION_WAIT: Duration = Duration::from_secs(5);
 /// Minimum interval between detail-log disk reads while the run is active.
 const DETAIL_REFRESH: Duration = Duration::from_millis(250);
 /// Bound for detail-log disk reads (bytes of tail).
@@ -73,8 +74,8 @@ const ACCENT: Color = Color::Cyan;
 /// Terminal handle used by the dashboard.
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
-/// Runs the dashboard until the user quits after completion (q/Enter) or a
-/// terminal error occurs. Never mutates the run state; only the cancel flag.
+/// Runs until completion followed by any key or a five-second countdown, or
+/// until a terminal error occurs. Only the cancel flag can mutate engine state.
 ///
 /// A panic anywhere in the snapshot/render/input path is caught here and
 /// mapped into a terminal error: unwinding through `main` would kill the
@@ -114,7 +115,11 @@ fn event_loop(dash: &mut Dashboard<'_>, term: &mut Term) -> io::Result<()> {
             dash.drawn_sig = dash.sig;
             force_draw = false;
         }
-        let wait = if dash.done { IDLE_POLL } else { TICK };
+        let wait = match dash.completion_remaining(Instant::now()) {
+            Some(remaining) if remaining.is_zero() => return Ok(()),
+            Some(remaining) => remaining.min(IDLE_POLL),
+            None => TICK,
+        };
         if event::poll(wait)? {
             match event::read()? {
                 Event::Resize(_, _) => force_draw = true,
@@ -385,10 +390,10 @@ struct Dashboard<'a> {
     tail_pending: bool,
     counts: Counts,
     done: bool,
+    exit_at: Option<Instant>,
     cancelled: bool,
     /// Run clock: live while running, latched at the first done snapshot so
-    /// the finished screen shows the actual run length and the draw
-    /// signature stops changing.
+    /// the finished screen shows the actual run length.
     run_elapsed: u64,
     /// Fingerprint of everything rendered; equal fingerprints skip the draw.
     sig: u64,
@@ -415,6 +420,7 @@ impl<'a> Dashboard<'a> {
             tail_pending: false,
             counts: Counts::default(),
             done: false,
+            exit_at: None,
             cancelled: false,
             run_elapsed: 0,
             sig: 0,
@@ -444,12 +450,12 @@ impl<'a> Dashboard<'a> {
             (state.done, state.started)
         };
         if finished && !self.done {
+            self.exit_at = Some(Instant::now() + COMPLETION_WAIT);
+            self.help = false;
+            self.confirm = false;
             // One final tail refresh so the detail view shows the last output.
             self.tail_pending = true;
-            // Latch the run clock at the first done snapshot: the finished
-            // screen must show the actual run length, not how long the user
-            // deliberated over it. A frozen clock also keeps the draw
-            // signature stable so the idle loop stops redrawing.
+            // Keep update duration separate from the completion countdown.
             self.run_elapsed = started.elapsed().as_secs();
         }
         self.done = finished;
@@ -458,6 +464,18 @@ impl<'a> Dashboard<'a> {
         }
         self.cancelled = handle.cancel.load(Ordering::Relaxed);
         self.compute_sig();
+    }
+
+    fn completion_remaining(&self, now: Instant) -> Option<Duration> {
+        self.exit_at
+            .map(|deadline| deadline.saturating_duration_since(now))
+    }
+
+    fn completion_seconds(&self) -> u64 {
+        self.completion_remaining(Instant::now())
+            .map_or(0, |remaining| {
+                remaining.as_secs() + u64::from(remaining.subsec_nanos() != 0)
+            })
     }
 
     /// FNV-1a fingerprint of every rendered byte; a stable fingerprint skips
@@ -476,6 +494,7 @@ impl<'a> Dashboard<'a> {
         mix_u64(&mut h, self.counts.timed_out as u64);
         mix_u64(&mut h, self.run_elapsed);
         mix_bool(&mut h, self.done);
+        mix_u64(&mut h, self.completion_seconds());
         mix_bool(&mut h, self.cancelled);
         mix_bool(&mut h, self.help);
         mix_bool(&mut h, self.confirm);
@@ -529,7 +548,10 @@ impl<'a> Dashboard<'a> {
 
     /// Handles one key press; returns true when the dashboard should exit.
     fn on_key(&mut self, key: KeyEvent) -> bool {
-        // Ctrl-C always cancels immediately, from any dialog or view.
+        if self.done {
+            return true;
+        }
+        // While running, Ctrl-C cancels immediately from any dialog or view.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.cancel();
             return false;
@@ -553,23 +575,13 @@ impl<'a> Dashboard<'a> {
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
             KeyCode::PageDown => self.page(1),
             KeyCode::PageUp => self.page(-1),
-            KeyCode::Enter => {
-                if self.done {
-                    return true;
-                }
-                self.toggle_detail();
-            }
+            KeyCode::Enter => self.toggle_detail(),
             KeyCode::Char('l') => self.toggle_detail(),
             KeyCode::Char('?') => self.help = !self.help,
-            KeyCode::Char('q') | KeyCode::Esc => {
-                if self.done {
-                    return true;
-                }
+            KeyCode::Char('q') | KeyCode::Esc if !self.cancelled => {
                 // Never cancel silently: ask first, unless cancellation is
                 // already in flight (then the header says CANCELLING).
-                if !self.cancelled {
-                    self.confirm = true;
-                }
+                self.confirm = true;
             }
             _ => {}
         }
@@ -715,6 +727,12 @@ impl<'a> Dashboard<'a> {
             "update-agents".to_string(),
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ));
+        if self.done {
+            line.push(Span::styled(
+                "COMPLETED".to_string(),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ));
+        }
         line.push_plain(format!("{}/{} done", c.done, c.total));
         if self.cancelled && !self.done {
             line.push(Span::styled(
@@ -824,26 +842,32 @@ impl<'a> Dashboard<'a> {
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
+        if self.done {
+            let notice = format!(
+                "Auto-exit in {}s | Any key: exit",
+                self.completion_seconds()
+            );
+            frame.render_widget(
+                Paragraph::new(notice).style(
+                    Style::default()
+                        .fg(ACCENT)
+                        .bg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                area,
+            );
+            return;
+        }
         let mut line = Segments::new(area.width as usize);
-        // Once done, Enter exits instead of toggling the log; only `l`
-        // opens or closes it.
-        let log_hint = if self.done { "l log" } else { "enter/l log" };
-        let log_close_hint = if self.done {
-            "l close log"
-        } else {
-            "enter/l close log"
-        };
         if self.detail_open {
             line.push_dim("pgup/pgdn scroll".to_string());
-            line.push_dim(log_close_hint.to_string());
+            line.push_dim("enter/l close log".to_string());
         } else {
             line.push_dim("j/k select".to_string());
-            line.push_dim(log_hint.to_string());
+            line.push_dim("enter/l log".to_string());
             line.push_dim("? help".to_string());
         }
-        if self.done {
-            line.push_dim("q/enter exit".to_string());
-        } else if self.cancelled {
+        if self.cancelled {
             line.push(Span::styled(
                 "cancelling…".to_string(),
                 Style::default().fg(Color::Yellow),
@@ -925,15 +949,16 @@ impl<'a> Dashboard<'a> {
     }
 
     fn render_help(&self, frame: &mut Frame, full: Rect) {
-        const KEYS: [(&str, &str); 8] = [
+        const KEYS: [(&str, &str); 9] = [
             ("j / ↓", "select next row"),
             ("k / ↑", "select previous row"),
-            ("enter / l", "toggle log detail (enter exits when done)"),
+            ("enter / l", "toggle log detail"),
             ("pgup / pgdn", "scroll the log (page the list otherwise)"),
             ("?", "toggle this help"),
             ("q / esc", "quit (asks first while running)"),
             ("ctrl-c", "cancel the run now"),
             ("y / n", "confirm or dismiss the cancel question"),
+            ("any key", "exit when done (automatic after 5s)"),
         ];
         let area = centered_rect(full, 58.min(full.width), KEYS.len() as u16 + 2);
         frame.render_widget(Clear, area);
@@ -1532,5 +1557,42 @@ mod tests {
         let mut row = Row::new(&job);
         row.update(&job);
         assert_eq!(row.activity, "missing executable");
+    }
+
+    #[test]
+    fn completed_run_dismissal_precedes_dialogs_and_cancellation() {
+        let dir = std::env::temp_dir().join(format!(
+            "update-agents-completion-test-{}",
+            std::process::id()
+        ));
+        let mut spec = job_with(Status::Skipped, "not installed").spec;
+        spec.preflight = Preflight::Skipped("not installed".to_string());
+        let mut handle = crate::engine::start(
+            vec![spec],
+            crate::model::RunOptions {
+                jobs: 1,
+                timeout: Duration::from_secs(1),
+                run_dir: dir.clone(),
+            },
+        )
+        .unwrap();
+        handle.wait().unwrap();
+        let mut dash = Dashboard::new(&handle);
+        dash.help = true;
+        dash.confirm = true;
+        dash.snapshot();
+        let dismissed = dash.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let interrupted = dash.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        let cancelled = handle.cancel.load(Ordering::Relaxed);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(
+            dismissed,
+            "any key must dismiss a completed run, even with a dialog open"
+        );
+        assert!(interrupted, "Ctrl-C must also dismiss a completed run");
+        assert!(
+            !cancelled,
+            "dismissing a finished run must not request cancellation"
+        );
     }
 }

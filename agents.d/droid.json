@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "droid",
+  "label": "Factory Droid",
+  "installed": "droid",
+  "update": { "program": "droid", "args": ["update"] },
+  "version": { "program": "droid", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "droid",
+  "failure_contains": [],
+  "checks": []
+}

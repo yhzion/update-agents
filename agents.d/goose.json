@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "goose",
+  "label": "Goose",
+  "installed": "goose",
+  "update": { "program": "goose", "args": ["update"] },
+  "version": { "program": "goose", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "goose",
+  "failure_contains": [],
+  "checks": []
+}

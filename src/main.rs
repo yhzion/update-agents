@@ -1086,6 +1086,11 @@ PATHS:
                           report.json + per-agent logs; one process at a time
                           is enforced with a lock while updates run
 
+TUI COMPLETION:
+    Once every update finishes, the dashboard shows a five-second countdown.
+    Press any key to exit sooner. The final summary and log paths remain in
+    the terminal. --plain and --bg do not wait for this countdown.
+
 AGENT DESCRIPTORS:
     Adding an agent means adding one JSON file to a catalogue directory - no
     code changes. Files load in sorted order; unknown fields, duplicate IDs or

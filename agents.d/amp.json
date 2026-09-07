@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "amp",
+  "label": "Amp",
+  "installed": "amp",
+  "update": { "program": "amp", "args": ["update"] },
+  "version": { "program": "amp", "args": ["version"] },
+  "version_line": 0,
+  "resource": "amp",
+  "failure_contains": [],
+  "checks": []
+}
