@@ -1127,7 +1127,9 @@ fn argv_of(cmd: &CommandSpec) -> Vec<String> {
 }
 
 /// Plain text summary: one line per tool, counts, and the log location.
-pub fn summary(state: &RunState) -> String {
+/// Not-detected tools get a line only when their IDs were explicitly
+/// selected; the counts line always includes them.
+pub fn summary(state: &RunState, explicit: bool) -> String {
     let mut out = String::new();
     let id_width = state
         .jobs
@@ -1137,12 +1139,15 @@ pub fn summary(state: &RunState) -> String {
         .unwrap_or(0)
         .clamp(2, 24);
     for job in &state.jobs {
+        if job.status.hidden_from_list(explicit) {
+            continue;
+        }
         let id = clip(job.spec.id.clone(), id_width);
         let status_word = match job.status {
             Status::Succeeded => "succeeded",
             Status::Failed => "failed",
             Status::Blocked => "blocked",
-            Status::Skipped => "skipped",
+            Status::Skipped => "not detected",
             Status::Cancelled => "cancelled",
             Status::TimedOut => "timed out",
             Status::Running => "running",
@@ -1167,11 +1172,11 @@ pub fn summary(state: &RunState) -> String {
         {
             detail.push_str(&format!(" ({:.1}s)", job.elapsed.as_secs_f64()));
         }
-        out.push_str(&format!("{id:<id_width$}  {status_word:<9}  {detail}\n"));
+        out.push_str(&format!("{id:<id_width$}  {status_word:<12}  {detail}\n"));
     }
     let count = |want: Status| state.jobs.iter().filter(|job| job.status == want).count();
     out.push_str(&format!(
-        "\nsucceeded {}  failed {}  blocked {}  skipped {}  timed out {}  cancelled {}  ({} tools)\n",
+        "\nsucceeded {}  failed {}  blocked {}  not detected {}  timed out {}  cancelled {}  ({} tools)\n",
         count(Status::Succeeded),
         count(Status::Failed),
         count(Status::Blocked),
@@ -1707,5 +1712,56 @@ mod tests {
         assert!(rejected.message.contains("4097"));
         drop(state);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Builds a finished job directly; summary tests never run the engine.
+    fn job(id: &str, status: Status, message: &str) -> Job {
+        Job {
+            spec: spec(id, id, "true"),
+            status,
+            started: None,
+            elapsed: Duration::ZERO,
+            before: String::new(),
+            after: String::new(),
+            message: message.to_string(),
+            log: PathBuf::from(format!("/tmp/update-agents-{id}.log")),
+            exit_code: None,
+        }
+    }
+
+    /// Not-detected tools stay out of the per-tool list unless their IDs were
+    /// requested explicitly, while the counts line always reports them.
+    #[test]
+    fn summary_hides_not_detected_lines_unless_explicitly_selected() {
+        let state = RunState {
+            jobs: vec![
+                job("ghost", Status::Skipped, "executable 'ghost' not found"),
+                job("live", Status::Succeeded, ""),
+            ],
+            started: Instant::now(),
+            done: true,
+            run_dir: PathBuf::from("/tmp/update-agents-summary-test"),
+        };
+        let hidden = summary(&state, false);
+        assert!(
+            !hidden.lines().any(|line| line.starts_with("ghost")),
+            "not-detected tools must stay out of the per-tool list: {hidden}"
+        );
+        let counts = hidden
+            .lines()
+            .find(|line| line.contains("not detected 1"))
+            .expect("the counts line always includes not-detected tools");
+        assert!(counts.contains("succeeded 1"), "{counts}");
+        assert!(counts.contains("(2 tools)"), "{counts}");
+
+        let shown = summary(&state, true);
+        let ghost = shown
+            .lines()
+            .find(|line| line.starts_with("ghost"))
+            .expect("explicitly selected tools always get a line");
+        assert!(
+            ghost.contains("not detected") && ghost.contains("executable 'ghost' not found"),
+            "explicit selection must name the tool and its reason: {ghost}"
+        );
     }
 }

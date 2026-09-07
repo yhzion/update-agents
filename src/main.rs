@@ -640,11 +640,11 @@ fn exit_code(state: &RunState) -> i32 {
 }
 
 /// Wait for the engine, print the engine summary, derive the exit code.
-fn finish(handle: &mut RunHandle) -> i32 {
+fn finish(handle: &mut RunHandle, explicit: bool) -> i32 {
     let wait_result = handle.wait();
     let snap = snapshot(handle);
     println!();
-    println!("{}", engine::summary(&snap));
+    println!("{}", engine::summary(&snap, explicit));
     if let Err(e) = wait_result {
         eprintln!("update-agents: engine: {e}");
         return EX_FAILURE;
@@ -653,26 +653,24 @@ fn finish(handle: &mut RunHandle) -> i32 {
 }
 
 /// Non-interactive run: real status-transition lines, then the summary.
-fn plain_run(handle: &RunHandle, jobs: usize, timeout_secs: u64, run_dir: &Path) {
-    let count = {
+fn plain_run(handle: &RunHandle, jobs: usize, timeout_secs: u64, run_dir: &Path, explicit: bool) {
+    let (count, hidden) = {
         let st = handle.state.lock().unwrap_or_else(|p| p.into_inner());
-        st.jobs.len()
+        let hidden = st
+            .jobs
+            .iter()
+            .filter(|job| job.status.hidden_from_list(explicit))
+            .count();
+        (st.jobs.len(), hidden)
     };
-    println!("updating {count} agent(s), jobs={jobs}, timeout={timeout_secs}s");
+    println!("{}", updating_header(count, hidden, jobs, timeout_secs));
     println!("run dir: {}", run_dir.display());
     let mut last: Vec<Status> = vec![Status::Queued; count];
     let mut cancel_noted = false;
     loop {
-        let mut lines: Vec<String> = Vec::new();
-        let done = {
+        let (lines, done) = {
             let st = handle.state.lock().unwrap_or_else(|p| p.into_inner());
-            for (i, job) in st.jobs.iter().enumerate() {
-                if last[i] != job.status {
-                    last[i] = job.status;
-                    lines.push(transition_line(job));
-                }
-            }
-            st.done
+            (collect_transitions(&mut last, &st.jobs, explicit), st.done)
         };
         for line in &lines {
             println!("{line}");
@@ -698,8 +696,35 @@ fn transition_line(job: &Job) -> String {
         Status::TimedOut => format!("{id}: timed out{}", detail(job)),
         Status::Cancelled => format!("{id}: cancelled{}", detail(job)),
         Status::Blocked => format!("{id}: blocked - {}", one_line(&job.message)),
-        Status::Skipped => format!("{id}: skipped - {}", one_line(&job.message)),
+        Status::Skipped => format!("{id}: not detected - {}", one_line(&job.message)),
     }
+}
+
+/// Header line for plain runs; names the not-detected agents when any exist.
+fn updating_header(count: usize, hidden: usize, jobs: usize, timeout_secs: u64) -> String {
+    if hidden > 0 {
+        format!(
+            "updating {count} agent(s), {hidden} not detected, jobs={jobs}, timeout={timeout_secs}s"
+        )
+    } else {
+        format!("updating {count} agent(s), jobs={jobs}, timeout={timeout_secs}s")
+    }
+}
+
+/// Diffs `jobs` against `last`, updating it in place, and returns the
+/// transition lines to print. Not-detected lines are suppressed unless the
+/// tools were selected explicitly.
+fn collect_transitions(last: &mut [Status], jobs: &[Job], explicit: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (i, job) in jobs.iter().enumerate() {
+        if last[i] != job.status {
+            last[i] = job.status;
+            if !job.status.hidden_from_list(explicit) {
+                lines.push(transition_line(job));
+            }
+        }
+    }
+    lines
 }
 
 fn detail(job: &Job) -> String {
@@ -768,7 +793,7 @@ fn print_catalogue(specs: &[ToolSpec], source: &str) {
         match &s.preflight {
             Preflight::Ready => println!("{:width$}  state  : ready", "", width = width),
             Preflight::Skipped(reason) => println!(
-                "{:width$}  state  : skipped - {}",
+                "{:width$}  state  : not detected - {}",
                 "",
                 one_line(reason),
                 width = width
@@ -928,6 +953,7 @@ fn run_updates(args: &[OsString], opts: &Options, bg_child: bool, ack_fd: Option
             })
             .collect()
     };
+    let explicit = !opts.ids.is_empty();
     let source = catalogue_source_desc(opts.agents_dir.as_deref());
 
     if opts.list {
@@ -1015,10 +1041,10 @@ fn run_updates(args: &[OsString], opts: &Options, bg_child: bool, ack_fd: Option
         && std::env::var("TERM").map(|t| t != "dumb").unwrap_or(false);
 
     let code = if tui {
-        match ui::run(&handle) {
+        match ui::run(&handle, explicit) {
             Ok(()) => {
                 println!();
-                finish(&mut handle)
+                finish(&mut handle, explicit)
             }
             Err(e) => {
                 handle.cancel.store(true, Ordering::SeqCst);
@@ -1027,14 +1053,14 @@ fn run_updates(args: &[OsString], opts: &Options, bg_child: bool, ack_fd: Option
                 }
                 let snap = snapshot(&handle);
                 println!();
-                println!("{}", engine::summary(&snap));
+                println!("{}", engine::summary(&snap, explicit));
                 eprintln!("update-agents: terminal ui failed: {e}");
                 exit_code(&snap).max(EX_FAILURE)
             }
         }
     } else {
-        plain_run(&handle, jobs, timeout_secs, &run_dir);
-        finish(&mut handle)
+        plain_run(&handle, jobs, timeout_secs, &run_dir, explicit);
+        finish(&mut handle, explicit)
     };
 
     unpublish_cancel();
@@ -1052,8 +1078,9 @@ USAGE:
     update-agents [OPTIONS] [ID...]
 
 Without IDs every catalogue agent updates. Known IDs only; bad options or
-unknown IDs fail before anything runs. Agents whose executables are missing
-are skipped: nothing runs for them and skipping never fails the run.
+unknown IDs fail before anything runs. Agents whose executables are not
+detected run nothing, never fail the run, and stay out of the list unless
+requested by ID; the report still records them.
 
 OPTIONS:
     --list, --dry-run     Print update/version commands and exit; change nothing
@@ -1071,8 +1098,8 @@ OPTIONS:
     --help                This help
 
 EXIT CODES:
-    0 all updates succeeded or skipped (missing executables are skipped,
-      which does not cause a nonzero status)
+    0 all updates succeeded (not-detected executables do not cause a
+      nonzero status)
     1 an update failed, timed out or was cancelled; startup failures
       (I/O, run lock) also exit 1
     2 usage or catalogue error (nothing ran)
@@ -1118,3 +1145,91 @@ EXAMPLES:
     update-agents --bg --jobs 8       # background run; prints PID + report path
     update-agents --list              # show commands, change nothing
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::CommandSpec;
+
+    /// Minimal finished job, mirroring the `ui` tests' `job_with` pattern.
+    fn job(id: &str, status: Status, message: &str) -> Job {
+        Job {
+            spec: ToolSpec {
+                id: id.to_string(),
+                label: id.to_string(),
+                update: CommandSpec {
+                    program: id.to_string(),
+                    args: vec!["update".to_string()],
+                },
+                version: None,
+                resource: id.to_string(),
+                version_line: 0,
+                failure_contains: Vec::new(),
+                preflight: Preflight::Ready,
+            },
+            status,
+            started: None,
+            elapsed: Duration::ZERO,
+            before: String::new(),
+            after: String::new(),
+            message: message.to_string(),
+            log: PathBuf::from(format!("/tmp/update-agents-{id}.log")),
+            exit_code: None,
+        }
+    }
+
+    #[test]
+    fn transition_line_words_not_detected_for_skipped_jobs() {
+        let ghost = job("ghost", Status::Skipped, "executable 'ghost' not found");
+        assert_eq!(
+            transition_line(&ghost),
+            "ghost: not detected - executable 'ghost' not found"
+        );
+        // Only the skipped arm changes wording; every other status is intact.
+        assert_eq!(
+            transition_line(&job("live", Status::Succeeded, "")),
+            "live: ok"
+        );
+        assert_eq!(
+            transition_line(&job("held", Status::Blocked, "dirty tree")),
+            "held: blocked - dirty tree"
+        );
+    }
+
+    #[test]
+    fn collect_transitions_suppresses_not_detected_unless_explicit() {
+        let jobs = vec![
+            job("ghost", Status::Skipped, "reason"),
+            job("live", Status::Succeeded, ""),
+        ];
+        let mut last = vec![Status::Queued; jobs.len()];
+        let plain = collect_transitions(&mut last, &jobs, false);
+        assert_eq!(
+            plain,
+            vec!["live: ok"],
+            "not-detected lines stay out of plain output without explicit IDs"
+        );
+        assert_eq!(last, vec![Status::Skipped, Status::Succeeded]);
+
+        let mut last = vec![Status::Queued; jobs.len()];
+        let explicit = collect_transitions(&mut last, &jobs, true);
+        assert_eq!(
+            explicit,
+            vec!["ghost: not detected - reason", "live: ok"],
+            "explicitly selected tools always get their line"
+        );
+        assert_eq!(last, vec![Status::Skipped, Status::Succeeded]);
+    }
+
+    #[test]
+    fn updating_header_mentions_not_detected_count() {
+        assert_eq!(
+            updating_header(4, 0, 4, 600),
+            "updating 4 agent(s), jobs=4, timeout=600s"
+        );
+        assert_eq!(
+            updating_header(4, 1, 4, 600),
+            "updating 4 agent(s), 1 not detected, jobs=4, timeout=600s"
+        );
+    }
+}

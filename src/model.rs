@@ -41,6 +41,14 @@ pub enum Status {
     TimedOut,
 }
 
+impl Status {
+    /// True when a job must stay out of every human-visible list: not-detected
+    /// tools are only shown when their IDs were explicitly requested.
+    pub fn hidden_from_list(self, explicit: bool) -> bool {
+        !explicit && self == Status::Skipped
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Job {
     pub spec: ToolSpec,
@@ -67,4 +75,36 @@ pub struct RunOptions {
     pub jobs: usize,
     pub timeout: Duration,
     pub run_dir: PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Status;
+
+    #[test]
+    fn only_not_detected_jobs_are_hidden_and_only_without_explicit_ids() {
+        // Full-catalogue run: undetected executables stay out of the list.
+        assert!(Status::Skipped.hidden_from_list(false));
+        // Explicitly requested IDs always get an answer, never silence.
+        assert!(!Status::Skipped.hidden_from_list(true));
+        // Every other status stays visible in both modes.
+        for status in [
+            Status::Queued,
+            Status::Running,
+            Status::Succeeded,
+            Status::Failed,
+            Status::Blocked,
+            Status::Cancelled,
+            Status::TimedOut,
+        ] {
+            assert!(
+                !status.hidden_from_list(false),
+                "{status:?} must stay visible"
+            );
+            assert!(
+                !status.hidden_from_list(true),
+                "{status:?} must stay visible"
+            );
+        }
+    }
 }

@@ -15,6 +15,8 @@
 //!   cursor on every exit path. Terminal/output errors and panics inside the
 //!   event loop cancel the run via `handle.cancel` and are returned to `main`
 //!   as an error for reporting.
+//! - Not-detected rows are hidden unless tools were selected explicitly; the
+//!   footer names them.
 //!
 //! Key bindings: j/k or arrows select, Enter/l toggles the bounded detail
 //! log, PgUp/PgDn scrolls it (pages the list otherwise), ? toggles help,
@@ -62,8 +64,8 @@ const TEXT_CAP: usize = 256;
 /// Prefix of the engine's internal per-job log header (see `write_log_header`
 /// in engine.rs); hidden from the overview activity, kept in the detail log.
 const LOG_HEADER_PREFIX: &str = "# update-agents job ";
-/// Column width of the status cell.
-const STATUS_W: usize = 9;
+/// Column width of the status cell; "not detected" is the longest word.
+const STATUS_W: usize = 12;
 /// Column width of the elapsed-time cell.
 const TIME_W: usize = 8;
 /// Minimum width for the activity column to be shown at all.
@@ -82,7 +84,7 @@ type Term = Terminal<CrosstermBackend<Stdout>>;
 /// process, release the single-instance lock and leave the engine's updater
 /// children running invisibly. The panic hook has already restored the
 /// terminal by the time the panic is caught.
-pub fn run(handle: &RunHandle) -> io::Result<()> {
+pub fn run(handle: &RunHandle, explicit: bool) -> io::Result<()> {
     install_panic_hook();
     let mut term: Term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     enable_raw_mode()?;
@@ -90,7 +92,7 @@ pub fn run(handle: &RunHandle) -> io::Result<()> {
     execute!(io::stdout(), EnterAlternateScreen)?;
     term.hide_cursor()?;
 
-    let mut dash = Dashboard::new(handle);
+    let mut dash = Dashboard::new(handle, explicit);
     let outcome = catch_unwind(AssertUnwindSafe(|| event_loop(&mut dash, &mut term)));
     let outcome = match outcome {
         Ok(result) => result,
@@ -370,6 +372,9 @@ impl Counts {
 /// the cancel flag.
 struct Dashboard<'a> {
     handle: &'a RunHandle,
+    /// True when the user named tool IDs explicitly: then not-detected rows
+    /// stay visible everywhere instead of being hidden.
+    explicit: bool,
     rows: Vec<Row>,
     sel: usize,
     /// Round-robin cursor for the one-per-tick activity tail read.
@@ -401,9 +406,10 @@ struct Dashboard<'a> {
 }
 
 impl<'a> Dashboard<'a> {
-    fn new(handle: &'a RunHandle) -> Self {
+    fn new(handle: &'a RunHandle, explicit: bool) -> Self {
         Dashboard {
             handle,
+            explicit,
             rows: Vec::new(),
             sel: 0,
             rot: 0,
@@ -437,7 +443,9 @@ impl<'a> Dashboard<'a> {
             if self.rows.len() != state.jobs.len() {
                 self.rows.clear();
                 self.rows.extend(state.jobs.iter().map(Row::new));
-                self.sel = self.sel.min(self.rows.len().saturating_sub(1));
+                self.sel = (0..self.rows.len())
+                    .find(|&i| self.is_visible(i))
+                    .unwrap_or(0);
             }
             for (row, job) in self.rows.iter_mut().zip(&state.jobs) {
                 row.update(job);
@@ -594,12 +602,27 @@ impl<'a> Dashboard<'a> {
         self.handle.cancel.store(true, Ordering::Relaxed);
     }
 
+    /// False for rows hidden from the list: not-detected tools stay out of
+    /// the list and the selection walk; the footer names them instead.
+    fn is_visible(&self, i: usize) -> bool {
+        !self.rows[i].status.hidden_from_list(self.explicit)
+    }
+
     fn move_selection(&mut self, delta: isize) {
         let n = self.rows.len();
         if n == 0 {
             return;
         }
-        self.sel = (self.sel as isize + delta).rem_euclid(n as isize) as usize;
+        // Walk at most n steps (wrap-around) to the next visible row; when
+        // nothing is visible the selection stays where it is.
+        let mut target = self.sel;
+        for _ in 0..n {
+            target = (target as isize + delta).rem_euclid(n as isize) as usize;
+            if self.is_visible(target) {
+                break;
+            }
+        }
+        self.sel = target;
         self.sync_detail();
     }
 
@@ -625,8 +648,23 @@ impl<'a> Dashboard<'a> {
             (self.sel as isize + step).min(n as isize - 1)
         } else {
             (self.sel as isize - step).max(0)
-        };
-        self.sel = target as usize;
+        } as usize;
+        // A clamped target may land on a hidden row: search for the nearest
+        // visible row walking back towards the start of the page (down-page
+        // searches backwards, up-page forwards); keep the selection when the
+        // whole list is hidden.
+        if self.is_visible(target) {
+            self.sel = target;
+        } else {
+            let near = if direction > 0 {
+                (0..target).rev().find(|&i| self.is_visible(i))
+            } else {
+                (target + 1..n).find(|&i| self.is_visible(i))
+            };
+            if let Some(i) = near {
+                self.sel = i;
+            }
+        }
         self.sync_detail();
     }
 
@@ -756,7 +794,7 @@ impl<'a> Dashboard<'a> {
             line.push_colored(format!("block {}", c.blocked), Color::Yellow);
         }
         if c.skipped > 0 {
-            line.push_colored(format!("skip {}", c.skipped), Color::DarkGray);
+            line.push_colored(format!("not detected {}", c.skipped), Color::DarkGray);
         }
         if c.cancelled > 0 {
             line.push_colored(format!("cancelled {}", c.cancelled), Color::DarkGray);
@@ -828,15 +866,24 @@ impl<'a> Dashboard<'a> {
         for row in &mut self.rows {
             row.build_cells(col);
         }
-        let selected = self.sel;
-        let items: Vec<ListItem<'_>> = self
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(i, row)| ListItem::new(row_line(row, col, i == selected)))
+        let visible: Vec<usize> = (0..self.rows.len())
+            .filter(|&i| self.is_visible(i))
             .collect();
+        if visible.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled("no detected tools", dim_style()))),
+                area,
+            );
+            return;
+        }
+        let selected = self.sel;
+        let items: Vec<ListItem<'_>> = visible
+            .iter()
+            .map(|&i| ListItem::new(row_line(&self.rows[i], col, i == selected)))
+            .collect();
+        let highlight = visible.iter().position(|&i| i == selected).unwrap_or(0);
         let mut state = ListState::default();
-        state.select(Some(selected));
+        state.select(Some(highlight));
         let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
         frame.render_stateful_widget(list, area, &mut state);
     }
@@ -859,6 +906,18 @@ impl<'a> Dashboard<'a> {
             return;
         }
         let mut line = Segments::new(area.width as usize);
+        // Hidden rows are silent in the list, so the footer must name them
+        // before the key hints: people need to see what was not detected.
+        let hidden: Vec<&str> = (0..self.rows.len())
+            .filter(|&i| !self.is_visible(i))
+            .map(|i| self.rows[i].id.as_str())
+            .collect();
+        if !hidden.is_empty() {
+            line.push_dim(format!("not detected {}:", hidden.len()));
+            for id in hidden {
+                line.push_dim(id.to_string());
+            }
+        }
         if self.detail_open {
             line.push_dim("pgup/pgdn scroll".to_string());
             line.push_dim("enter/l close log".to_string());
@@ -1349,7 +1408,7 @@ fn status_text(status: Status) -> &'static str {
         Status::Succeeded => "ok",
         Status::Failed => "failed",
         Status::Blocked => "blocked",
-        Status::Skipped => "skipped",
+        Status::Skipped => "not detected",
         Status::Cancelled => "cancelled",
         Status::TimedOut => "timeout",
     }
@@ -1482,10 +1541,11 @@ mod tests {
         let mut out = String::new();
         push_clipped(&mut out, "cursor-agent", 12);
         assert_eq!(out, "cursor-agent");
-        // STATUS_W is exactly the width of the longest status word, so a
-        // cancelled row must render its full status, not "cancelle…".
-        push_clipped(&mut out, "cancelled", STATUS_W);
-        assert_eq!(out, "cancelled");
+        // STATUS_W is exactly the width of "not detected", the longest
+        // status word, so a not-detected row must render its full status,
+        // not "not detecte…".
+        push_clipped(&mut out, "not detected", STATUS_W);
+        assert_eq!(out, "not detected");
         assert_eq!(str_width(&out), STATUS_W);
         // The id cell keeps an exact-fit id unpadded and untruncated.
         push_cell_padded(&mut out, "cursor-agent", 12);
@@ -1577,7 +1637,7 @@ mod tests {
         )
         .unwrap();
         handle.wait().unwrap();
-        let mut dash = Dashboard::new(&handle);
+        let mut dash = Dashboard::new(&handle, false);
         dash.help = true;
         dash.confirm = true;
         dash.snapshot();
@@ -1594,5 +1654,49 @@ mod tests {
             !cancelled,
             "dismissing a finished run must not request cancellation"
         );
+    }
+
+    #[test]
+    fn selection_skips_not_detected_rows() {
+        let dir = std::env::temp_dir().join(format!(
+            "update-agents-selection-test-{}",
+            std::process::id()
+        ));
+        let mut ghost = job_with(Status::Queued, "").spec;
+        ghost.id = "ghost".to_string();
+        ghost.preflight = Preflight::Skipped("nope".to_string());
+        let live = |id: &str| {
+            let mut s = job_with(Status::Queued, "").spec;
+            s.id = id.to_string();
+            s.update = CommandSpec {
+                program: "sh".to_string(),
+                args: vec!["-c".to_string(), "true".to_string()],
+            };
+            s.version = Some(CommandSpec {
+                program: "sh".to_string(),
+                args: vec!["-c".to_string(), "echo v".to_string()],
+            });
+            s
+        };
+        let mut handle = crate::engine::start(
+            vec![live("live1"), ghost, live("live2")],
+            crate::model::RunOptions {
+                jobs: 2,
+                timeout: Duration::from_secs(5),
+                run_dir: dir.clone(),
+            },
+        )
+        .unwrap();
+        handle.wait().unwrap();
+        let mut dash = Dashboard::new(&handle, false);
+        dash.snapshot();
+        assert!(dash.is_visible(0), "ready rows stay visible");
+        assert_eq!(dash.sel, 0, "selection starts on the first visible row");
+        assert!(!dash.is_visible(1), "the not-detected row must be hidden");
+        dash.move_selection(1);
+        assert_eq!(dash.sel, 2, "moving down skips the hidden row");
+        dash.move_selection(-1);
+        assert_eq!(dash.sel, 0, "moving up skips the hidden row again");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

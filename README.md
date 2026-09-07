@@ -30,7 +30,7 @@ JSON descriptors, not Rust code.
 | Parallel updates | Bound concurrency with `--jobs`; agents sharing a resource run one at a time |
 | Selective runs | Update every catalogue entry or pass only the agent IDs you need |
 | Read-only preview | Inspect resolved commands and preflight status with `--list` or `--dry-run` |
-| Missing tools | Skip agents with missing executables without failing the run |
+| Not-detected tools | Executables missing from the search path stay out of the list, never fail the run, and are recorded in the report |
 | Background mode | Detach with `--bg` and receive the PID, report path, and session log path |
 | Run records | Save a structured `report.json`, updater output, and version-probe logs |
 | Extensible catalogue | Add a JSON file with commands, a resource group, and optional safety checks |
@@ -222,7 +222,8 @@ For a CLI named `my-agent` that supports `update` and `--version`, an additional
 ```
 
 - `installed` identifies the executable that must already exist. Missing
-  installed, updater, or configured version executables produce a skipped job.
+  installed, updater, or configured version executables produce a
+  not-detected job (recorded as `skipped` in the report).
 - `version` is optional. `version_line` selects a zero-based nonempty line of its
   output and defaults to `0`.
 - `resource` defaults to the agent ID. Use a shared value, such as `npm-global`,
@@ -239,8 +240,9 @@ schema and safety-check examples.
 
 ## Execution and safety
 
-- **No automatic installation:** missing executables are skipped. The runner
-  does not install missing agents or updater dependencies.
+- **No automatic installation:** executables that are
+  not detected are left out of the run list. The runner does not install
+  missing agents or updater dependencies.
 - **One run per state directory:** a file lock prevents overlapping runs using
   the same state directory and stays held while workers are active.
 - **Bounded cancellation:** timeouts and cancellation send `SIGTERM` to each
@@ -269,13 +271,14 @@ contains `report.json`, `<agent-id>.log` for executed updates, and
 Background runs also capture terminal output in `session.log`.
 
 The report records counts and per-agent status, commands, before/after version
-text, exit code, elapsed time, messages, and log paths, including skipped and
-blocked agents. A successful update status reflects the updater's exit result
-and configured failure markers, not a guarantee that its version changed.
+text, exit code, elapsed time, messages, and log paths,
+including not-detected (recorded as `skipped`) and blocked agents. A
+successful update status reflects the updater's exit result and configured
+failure markers, not a guarantee that its version changed.
 
 | Exit code | Meaning |
 |---|---|
-| `0` | Every selected agent succeeded or was skipped |
+| `0` | Every selected agent succeeded or was not detected |
 | `1` | An update failed, timed out, or was cancelled; also used for startup I/O and lock failures |
 | `2` | Invalid arguments, unknown agent IDs, or a catalogue error; no updates ran |
 | `3` | No updates failed, but at least one agent was blocked |
