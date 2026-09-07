@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "grok",
+  "label": "Grok CLI",
+  "installed": "grok",
+  "update": { "program": "grok", "args": ["update"] },
+  "version": { "program": "grok", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "grok",
+  "failure_contains": [],
+  "checks": []
+}

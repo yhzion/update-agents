@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "opencode",
+  "label": "OpenCode",
+  "installed": "opencode",
+  "update": { "program": "opencode", "args": ["upgrade", "--method", "bun"] },
+  "version": { "program": "opencode", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "bun-global",
+  "failure_contains": [],
+  "checks": []
+}

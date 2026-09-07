@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "prime-agent",
+  "label": "Prime Agent",
+  "installed": "prime-agent",
+  "update": { "program": "prime-agent", "args": ["update"] },
+  "version": { "program": "prime-agent", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "npm-global",
+  "failure_contains": [],
+  "checks": []
+}

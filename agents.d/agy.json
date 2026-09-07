@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "agy",
+  "label": "AGY",
+  "installed": "agy",
+  "update": { "program": "agy", "args": ["update"] },
+  "version": { "program": "agy", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "agy",
+  "failure_contains": [],
+  "checks": []
+}

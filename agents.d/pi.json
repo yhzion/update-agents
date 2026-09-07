@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "pi",
+  "label": "Pi",
+  "installed": "pi",
+  "update": { "program": "pi", "args": ["update", "self"] },
+  "version": { "program": "pi", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "npm-global",
+  "failure_contains": [],
+  "checks": []
+}

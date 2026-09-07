@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "cursor-agent",
+  "label": "Cursor Agent",
+  "installed": "cursor-agent",
+  "update": { "program": "cursor-agent", "args": ["update"] },
+  "version": { "program": "cursor-agent", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "cursor",
+  "failure_contains": [],
+  "checks": []
+}

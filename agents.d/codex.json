@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "codex",
+  "label": "Codex CLI",
+  "installed": "codex",
+  "update": { "program": "codex", "args": ["update"] },
+  "version": { "program": "codex", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "codex",
+  "failure_contains": [],
+  "checks": []
+}

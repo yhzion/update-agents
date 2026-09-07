@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "omp",
+  "label": "OMP",
+  "installed": "omp",
+  "update": { "program": "omp", "args": ["update"] },
+  "version": { "program": "omp", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "omp",
+  "failure_contains": [],
+  "checks": []
+}

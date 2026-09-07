@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "claude",
+  "label": "Claude Code",
+  "installed": "claude",
+  "update": { "program": "claude", "args": ["update"] },
+  "version": { "program": "claude", "args": ["--version"] },
+  "version_line": 0,
+  "resource": "claude",
+  "failure_contains": [],
+  "checks": []
+}
