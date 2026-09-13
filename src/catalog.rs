@@ -19,7 +19,9 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(not(target_os = "macos"))]
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread::{self, JoinHandle};
@@ -583,12 +585,129 @@ fn check_git_clean(path: &Path) -> Option<String> {
     }
 }
 
-/// Own-user processes whose full /proc cmdline contains every listed literal
-/// mark the tool unsafe. Failure to inspect /proc, or to read the cmdline of
-/// an own-user process, fails closed. The blocked reason names the PID and
-/// the configured patterns but never the cmdline itself: arguments can embed
-/// API keys or other private launch details.
+/// Own-user processes whose full command line contains every listed literal
+/// mark the tool unsafe. Failure to inspect the process table, or to read the
+/// command line of an own-user process, fails closed. The blocked reason
+/// names the PID and the configured patterns but never the command line
+/// itself: arguments can embed API keys or other private launch details.
+#[cfg(target_os = "macos")]
 fn check_process_absent(patterns: &[String]) -> Option<String> {
+    check_process_absent_ps(patterns)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_process_absent(patterns: &[String]) -> Option<String> {
+    check_process_absent_procfs(patterns)
+}
+
+/// macOS has no `/proc`; the process table comes from
+/// `ps -axo pid=,uid=,command=`. Output lines look like
+/// `  1234   501 /bin/launchd ...`: a pid and uid followed by the full command
+/// line, separated by padding spaces. Lines without two numeric fields cannot
+/// name an own process and are skipped; spawn, wait, and read failures fail
+/// closed, like the Linux `/proc` path.
+#[cfg(target_os = "macos")]
+fn check_process_absent_ps(patterns: &[String]) -> Option<String> {
+    let mut child = match Command::new("ps")
+        .args(["-axo", "pid=,uid=,command="])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => return Some(format!("process_absent: cannot run ps: {e}")),
+    };
+
+    let stdout = bounded_read(child.stdout.take(), CMDLINE_CAP);
+    let stderr = bounded_read(child.stderr.take(), CMDLINE_CAP);
+
+    let deadline = Instant::now() + GIT_CHECK_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err("ps timed out".to_string());
+            }
+            Ok(None) => thread::sleep(GIT_CHECK_POLL),
+            Err(e) => {
+                let _ = child.kill();
+                break Err(format!("cannot wait for ps: {e}"));
+            }
+        }
+    };
+
+    let out = match join_bytes(stdout, "ps output") {
+        Ok(bytes) => bytes,
+        Err(reason) => return Some(format!("process_absent: {reason}")),
+    };
+
+    let status = match status {
+        Err(reason) => return Some(format!("process_absent: {reason}")),
+        Ok(status) => status,
+    };
+    if !status.success() {
+        let detail = join_bytes(stderr, "ps errors")
+            .ok()
+            .map(|bytes| one_line(&bytes))
+            .unwrap_or_default();
+        return Some(if detail.is_empty() {
+            format!(
+                "process_absent: ps failed with {}",
+                exit_text(status.code())
+            )
+        } else {
+            format!(
+                "process_absent: ps failed with {}: {detail}",
+                exit_text(status.code())
+            )
+        });
+    }
+
+    let own_uid = unsafe { libc::getuid() };
+    for line in String::from_utf8_lossy(&out).lines() {
+        let mut fields = line.trim_start().splitn(3, char::is_whitespace);
+        let pid: u32 = match fields.next().and_then(|field| field.parse().ok()) {
+            Some(pid) => pid,
+            // Not a process line: skip rather than fail on unrelated text.
+            None => continue,
+        };
+        let uid: u32 = match fields.next().and_then(|field| field.parse().ok()) {
+            Some(uid) => uid,
+            None => continue,
+        };
+        if uid != own_uid {
+            continue;
+        }
+        let cmdline = match fields.next() {
+            Some(cmdline) => cmdline,
+            None => {
+                return Some(format!(
+                    "process_absent: cannot read command line of own process {pid}"
+                ));
+            }
+        };
+        if cmdline.is_empty() {
+            continue;
+        }
+        if patterns
+            .iter()
+            .all(|pattern| cmdline.contains(pattern.as_str()))
+        {
+            return Some(format!(
+                "process_absent: live process {pid} matches [{}]",
+                patterns.join(", ")
+            ));
+        }
+    }
+    None
+}
+
+/// Linux implementation: `/proc/<pid>/cmdline` walk, unchanged.
+#[cfg(not(target_os = "macos"))]
+fn check_process_absent_procfs(patterns: &[String]) -> Option<String> {
     let own_uid = match fs::metadata("/proc/self") {
         Ok(md) => md.uid(),
         Err(e) => return Some(format!("process_absent: cannot identify own user: {e}")),
@@ -646,6 +765,7 @@ fn check_process_absent(patterns: &[String]) -> Option<String> {
 
 /// /proc/<pid>/cmdline is NUL-separated argv; render args space-joined so
 /// configured literals match within a single argument.
+#[cfg(not(target_os = "macos"))]
 fn read_cmdline(dir: &Path) -> io::Result<String> {
     let mut file = fs::File::open(dir.join("cmdline"))?;
     let mut buf = Vec::with_capacity(1024);

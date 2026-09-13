@@ -16,6 +16,7 @@ use crate::model::{Job, Preflight, RunOptions, RunState, Status, ToolSpec};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, IsTerminal};
+use std::net::{SocketAddr, TcpStream};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
@@ -862,6 +863,24 @@ fn main() {
     std::process::exit(real_main());
 }
 
+/// Minimal connectivity probe: one TCP connect attempt per target, then give
+/// up. Targets are IP literals so an offline machine usually fails in
+/// milliseconds (no route); a blackholed network costs at most the connect
+/// timeout per target. Any single success counts as online; this is a
+/// liveness check, not a content check.
+fn has_network() -> bool {
+    const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+    for target in ["1.1.1.1:443", "8.8.8.8:443"] {
+        let Ok(addr) = target.parse::<SocketAddr>() else {
+            continue;
+        };
+        if TcpStream::connect_timeout(&addr, PROBE_TIMEOUT).is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
 fn real_main() -> i32 {
     install_signal_handlers();
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -877,6 +896,18 @@ fn real_main() -> i32 {
     }
     if opts.version {
         println!("update-agents {PKG_VERSION}");
+        return EX_OK;
+    }
+
+    // Offline gate: quit quietly with one message and exit code 0 before any
+    // catalogue load, run lock, preflight check, or TUI starts. Updaters can
+    // only fail without network, and a cron-invoked background run must not
+    // wake the machine into doomed work. The probe is at most two short TCP
+    // connects to IP literals: no DNS, no HTTP, no child processes.
+    // Background children skip it: their launcher already checked, and a
+    // network loss after launch is the updaters' own failure to handle.
+    if ack_fd.is_none() && !has_network() {
+        println!("update-agents: no network access; exiting without updates");
         return EX_OK;
     }
 

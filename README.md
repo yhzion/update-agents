@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/version-0.1.0-06B6D4" alt="Version 0.1.0">
   <img src="https://img.shields.io/badge/Rust-2024-DEA584?logo=rust" alt="Rust edition 2024">
   <img src="https://img.shields.io/badge/TUI-Ratatui-06B6D4" alt="Ratatui terminal interface">
-  <img src="https://img.shields.io/badge/platform-Linux-4B5563?logo=linux&logoColor=white" alt="Linux">
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-4B5563" alt="Linux and macOS">
 </p>
 
 <p align="center">
@@ -67,12 +67,17 @@ when their descriptors use the same resource.
 
 ## Requirements
 
-- Linux. Process inspection uses `/proc`, and execution relies on Unix process
-  groups, signals, and file locking.
+- Linux or macOS. Process inspection uses `/proc` on Linux and `ps` on macOS;
+  execution relies on Unix process groups, signals, and file locking.
 - A Rust toolchain with Cargo and edition 2024 support to build from source.
 - The coding CLIs you want to update, already installed and configured.
 - Any updater dependencies required by their descriptors, such as `npm`, `bun`,
   or `uv`, plus network access when the updater needs it.
+- Network access at startup. Without it the program prints one line
+  (`no network access; exiting without updates`), exits 0, and starts
+  nothing: the probe is at most two short TCP connects, no DNS, no HTTP,
+  no child processes. The gate applies to every run, including
+  `--list` and `--dry-run`; `--help` and `--version` stay available offline.
 - An interactive terminal for the TUI. Non-terminal input or output, or
   `TERM=dumb`, selects plain mode automatically.
 
@@ -81,6 +86,18 @@ OpenCode uses Bun, Kimi CLI and Vibe use uv, and Cline and Crush use npm. Review
 or adapt the catalogue if your tools were installed differently.
 
 ## Build and install
+
+For a one-step setup — binary, bundled catalogue, and daily background cron
+runs at 10:00, 12:00, 15:00, and 18:00:
+
+```bash
+./scripts/install.sh
+```
+
+The script replaces any previously installed update-agents cron lines and
+leaves the rest of the crontab untouched. Cron skips scheduled times when the
+machine is off or asleep; missed runs are not replayed. Inspect or remove the
+entries with `crontab -l` / `crontab -e`.
 
 Clone the repository and install the binary:
 
