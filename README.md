@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.1-06B6D4" alt="Version 0.1.1">
+  <img src="https://img.shields.io/badge/version-0.1.2-06B6D4" alt="Version 0.1.2">
   <img src="https://img.shields.io/badge/Rust-2024-DEA584?logo=rust" alt="Rust edition 2024">
   <img src="https://img.shields.io/badge/TUI-Ratatui-06B6D4" alt="Ratatui terminal interface">
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-4B5563" alt="Linux and macOS">
@@ -34,6 +34,7 @@ JSON descriptors, not Rust code.
 | Background mode | Detach with `--bg` and receive the PID, report path, and session log path |
 | Run records | Save a structured `report.json`, updater output, and version-probe logs |
 | Extensible catalogue | Add a JSON file with commands, a resource group, and optional safety checks |
+| Self-update | Check GitHub releases and replace the binary in place with `update-agents self-update` |
 
 > [!IMPORTANT]
 > Running without IDs attempts to update every ready agent in the loaded
@@ -129,6 +130,21 @@ To inspect the checkout without installing either the binary or catalogue:
 cargo run --locked -- --agents-dir ./agents.d --list
 ```
 
+## Updating update-agents
+
+Releases ship prebuilt binaries for macOS (arm64, x86_64) and Linux (x86_64,
+aarch64). Update in place:
+
+```bash
+update-agents self-update
+```
+
+It downloads the asset for your OS/architecture, verifies its SHA-256 against
+the release's `sha256sums.txt`, and atomically replaces the running executable.
+Interactive dashboard runs also check for a newer release once a day and ask
+`Update now? [y/N]`; `--plain` and background runs print a one-line notice
+instead. The check is best-effort and never blocks or fails a run.
+
 ## Usage
 
 ```bash
@@ -152,6 +168,9 @@ update-agents --bg --jobs 4
 
 # Use only the descriptors in a specific directory
 update-agents --agents-dir ./agents.d --dry-run
+
+# Replace this binary with the latest GitHub release
+update-agents self-update
 ```
 
 `--timeout` applies to each update command and defaults to 600 seconds. Version

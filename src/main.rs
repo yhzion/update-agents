@@ -9,6 +9,7 @@
 mod catalog;
 mod engine;
 mod model;
+mod selfupdate;
 mod ui;
 
 use crate::engine::RunHandle;
@@ -280,7 +281,7 @@ fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf, String> {
     Ok(home_dir()?.join(fallback))
 }
 
-fn state_dir() -> Result<PathBuf, String> {
+pub(crate) fn state_dir() -> Result<PathBuf, String> {
     Ok(xdg_dir("XDG_STATE_HOME", ".local/state")?.join("update-agents"))
 }
 
@@ -886,6 +887,25 @@ fn real_main() -> i32 {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let ack_fd = consume_ack_fd_env();
 
+    // `self-update` is a subcommand, not an agent id: it replaces this binary
+    // and never launches updates. Intercepted before option parsing and the
+    // offline gate so it reports its own errors instead of "no network".
+    if args
+        .first()
+        .is_some_and(|a| a.as_os_str() == OsStr::new("self-update"))
+    {
+        if ack_fd.is_some() {
+            return fail_usage("self-update cannot run as a background child", ack_fd);
+        }
+        return match selfupdate::run_self_update() {
+            Ok(()) => EX_OK,
+            Err(e) => {
+                eprintln!("update-agents: {e}");
+                EX_FAILURE
+            }
+        };
+    }
+
     let opts = match parse_args(&args) {
         Ok(o) => o,
         Err(e) => return fail_usage(&e, ack_fd),
@@ -920,6 +940,16 @@ fn real_main() -> i32 {
     }
 
     run_updates(&args, &opts, bg_child, ack_fd)
+}
+
+/// True when the interactive dashboard will run: a real terminal on both
+/// stdin and stdout, plain/background modes off, and a capable `TERM`.
+fn wants_tui(opts: &Options, bg_child: bool) -> bool {
+    !opts.plain
+        && !bg_child
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::env::var("TERM").map(|t| t != "dumb").unwrap_or(false)
 }
 
 /// Catalogue load, selection validation, lock, engine start, then TUI or plain
@@ -960,10 +990,15 @@ fn run_updates(args: &[OsString], opts: &Options, bg_child: bool, ack_fd: Option
         .collect();
     if !unknown.is_empty() {
         let known: Vec<&str> = specs.iter().map(|s| s.id.as_str()).collect();
+        let hint = if unknown.iter().any(|u| u == "update") {
+            " (to update update-agents itself, run `update-agents self-update`)"
+        } else {
+            ""
+        };
         return fail_startup(
             ack_fd,
             &format!(
-                "unknown tool(s): {}; known: {}",
+                "unknown tool(s): {}; known: {}{hint}",
                 unknown.join(", "),
                 known.join(", ")
             ),
@@ -993,6 +1028,15 @@ fn run_updates(args: &[OsString], opts: &Options, bg_child: bool, ack_fd: Option
     }
     if selected.is_empty() {
         return fail_startup(ack_fd, "no agent definitions found", EX_USAGE);
+    }
+
+    // New-version notice / optional y/N self-update, before any updater runs:
+    // a self-update exits here without launching work or taking the run lock.
+    if ack_fd.is_none() && !opts.list {
+        match selfupdate::startup_check(wants_tui(opts, bg_child)) {
+            selfupdate::Startup::Updated => return EX_OK,
+            selfupdate::Startup::Continue => {}
+        }
     }
 
     let cores = std::thread::available_parallelism()
@@ -1065,11 +1109,7 @@ fn run_updates(args: &[OsString], opts: &Options, bg_child: bool, ack_fd: Option
         bg_send_ack(fd, &format!("{ACK_PREFIX}{}", run_dir.display()));
     }
 
-    let tui = !opts.plain
-        && !bg_child
-        && std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal()
-        && std::env::var("TERM").map(|t| t != "dumb").unwrap_or(false);
+    let tui = wants_tui(opts, bg_child);
 
     let code = if tui {
         match ui::run(&handle, explicit) {
@@ -1108,10 +1148,11 @@ fn run_updates(args: &[OsString], opts: &Options, bg_child: bool, ack_fd: Option
 }
 
 const HELP: &str = "\
-update-agents 0.1.1 - update AI coding agents in parallel
+update-agents 0.1.2 - update AI coding agents in parallel
 
 USAGE:
     update-agents [OPTIONS] [ID...]
+    update-agents self-update
 
 Without IDs every catalogue agent updates. Known IDs only; bad options or
 unknown IDs fail before anything runs. Agents whose executables are not
@@ -1154,6 +1195,15 @@ TUI COMPLETION:
     Press any key to exit sooner. The final summary and log paths remain in
     the terminal. --plain and --bg do not wait for this countdown.
 
+SELF-UPDATE:
+    update-agents self-update
+        Download the latest GitHub release asset for this OS/architecture,
+        verify its SHA-256, and atomically replace this executable. Interactive
+        runs also check for a newer release once a day and offer
+        `Update now? [y/N]`; non-interactive runs print a one-line notice. The
+        check is best-effort: no curl, no network, or an unwritable state
+        directory never blocks or fails a run.
+
 AGENT DESCRIPTORS:
     Adding an agent means adding one JSON file to a catalogue directory - no
     code changes. Files load in sorted order; unknown fields, duplicate IDs or
@@ -1180,6 +1230,7 @@ EXAMPLES:
     update-agents --plain pi omp      # non-interactive status lines
     update-agents --bg --jobs 8       # background run; prints PID + report path
     update-agents --list              # show commands, change nothing
+    update-agents self-update         # replace this binary with the latest release
 ";
 
 #[cfg(test)]
