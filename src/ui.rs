@@ -122,6 +122,12 @@ fn event_loop(dash: &mut Dashboard<'_>, term: &mut Term) -> io::Result<()> {
             Some(remaining) => remaining.min(IDLE_POLL),
             None => TICK,
         };
+        if terminal_lost() {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "input terminal closed",
+            ));
+        }
         if event::poll(wait)? {
             match event::read()? {
                 Event::Resize(_, _) => force_draw = true,
@@ -132,6 +138,21 @@ fn event_loop(dash: &mut Dashboard<'_>, term: &mut Term) -> io::Result<()> {
             }
         }
     }
+}
+
+/// True once the input terminal has gone away. A closed pty leaves stdin at
+/// EOF with `POLLHUP` set. crossterm's event source otherwise spins on that
+/// EOF without ever observing its own timeout, so the TUI would hang forever
+/// with the single-instance run lock held; detect it and fail instead.
+fn terminal_lost() -> bool {
+    let mut pfd = libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // Zero timeout: report the current state only, never wait.
+    let rc = unsafe { libc::poll(&mut pfd, 1, 0) };
+    rc > 0 && pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
 }
 
 // ---------------------------------------------------------------------------

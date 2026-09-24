@@ -15,7 +15,7 @@ use crate::engine::RunHandle;
 use crate::model::{Job, Preflight, RunOptions, RunState, Status, ToolSpec};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions, Permissions};
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -1083,9 +1083,14 @@ fn run_updates(args: &[OsString], opts: &Options, bg_child: bool, ack_fd: Option
                     eprintln!("update-agents: engine: {we}");
                 }
                 let snap = snapshot(&handle);
-                println!();
-                println!("{}", engine::summary(&snap, explicit));
-                eprintln!("update-agents: terminal ui failed: {e}");
+                // The terminal is often the very thing that failed: report
+                // best-effort so a revoked stdout/stderr cannot panic the
+                // exit path after the run is already cancelled.
+                let mut out = io::stdout();
+                let mut err = io::stderr();
+                let _ = writeln!(out);
+                let _ = writeln!(out, "{}", engine::summary(&snap, explicit));
+                let _ = writeln!(err, "update-agents: terminal ui failed: {e}");
                 exit_code(&snap).max(EX_FAILURE)
             }
         }
@@ -1103,7 +1108,7 @@ fn run_updates(args: &[OsString], opts: &Options, bg_child: bool, ack_fd: Option
 }
 
 const HELP: &str = "\
-update-agents 0.1.0 - update AI coding agents in parallel
+update-agents 0.1.1 - update AI coding agents in parallel
 
 USAGE:
     update-agents [OPTIONS] [ID...]

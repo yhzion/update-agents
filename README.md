@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-06B6D4" alt="Version 0.1.0">
+  <img src="https://img.shields.io/badge/version-0.1.1-06B6D4" alt="Version 0.1.1">
   <img src="https://img.shields.io/badge/Rust-2024-DEA584?logo=rust" alt="Rust edition 2024">
   <img src="https://img.shields.io/badge/TUI-Ratatui-06B6D4" alt="Ratatui terminal interface">
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-4B5563" alt="Linux and macOS">
