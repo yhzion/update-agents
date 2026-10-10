@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.2-06B6D4" alt="Version 0.1.2">
+  <img src="https://img.shields.io/badge/version-0.1.3-06B6D4" alt="Version 0.1.3">
   <img src="https://img.shields.io/badge/Rust-2024-DEA584?logo=rust" alt="Rust edition 2024">
   <img src="https://img.shields.io/badge/TUI-Ratatui-06B6D4" alt="Ratatui terminal interface">
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-4B5563" alt="Linux and macOS">
@@ -214,14 +214,16 @@ resolved executable paths and preflight state on your machine.
 | `droid` | Factory Droid | `droid update` |
 | `goose` | Goose | `goose update` |
 | `grok` | Grok CLI | `grok update` |
-| `kimi` | Kimi CLI | `uv tool upgrade kimi-cli` |
-| `kiro-cli` | Kiro CLI | `kiro-cli update -y` |
 | `omp` | OMP | `omp update` |
 | `opencode` | OpenCode | `opencode upgrade --method bun` |
 | `pi` | Pi | `pi update self` |
-| `prime-agent` | Prime Agent | `prime-agent update` |
-| `qwen` | Qwen Code | `qwen update` |
-| `vibe` | Vibe | `uv tool upgrade mistral-vibe` |
+| `pi-bolt` | Pi-Bolt | `pi-bolt update self` |
+
+`pi-bolt` reaches its installer only when a newer Pi-Bolt release exists. That
+installer reads keys from the terminal whenever one is attached, so an
+interactive run can wait at its action menu until you answer, and its menu text
+lands in the run log rather than the dashboard. Unattended runs (`--bg`, or any
+run without an attached terminal) take the installer's defaults instead.
 
 ### Add or customize an agent
 

@@ -911,6 +911,7 @@ fn real_main() -> i32 {
         Err(e) => return fail_usage(&e, ack_fd),
     };
     if opts.help {
+        println!("update-agents {PKG_VERSION} - update AI coding agents in parallel\n");
         print!("{HELP}");
         return EX_OK;
     }
@@ -1148,8 +1149,6 @@ fn run_updates(args: &[OsString], opts: &Options, bg_child: bool, ack_fd: Option
 }
 
 const HELP: &str = "\
-update-agents 0.1.2 - update AI coding agents in parallel
-
 USAGE:
     update-agents [OPTIONS] [ID...]
     update-agents self-update
