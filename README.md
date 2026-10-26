@@ -216,14 +216,6 @@ resolved executable paths and preflight state on your machine.
 | `grok` | Grok CLI | `grok update` |
 | `omp` | OMP | `omp update` |
 | `opencode` | OpenCode | `opencode upgrade --method bun` |
-| `pi` | Pi | `pi update self` |
-| `pi-bolt` | Pi-Bolt | `pi-bolt update self` |
-
-`pi-bolt` reaches its installer only when a newer Pi-Bolt release exists. That
-installer reads keys from the terminal whenever one is attached, so an
-interactive run can wait at its action menu until you answer, and its menu text
-lands in the run log rather than the dashboard. Unattended runs (`--bg`, or any
-run without an attached terminal) take the installer's defaults instead.
 
 ### Add or customize an agent
 
